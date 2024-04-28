@@ -681,3 +681,92 @@ procdump(void)
     printf("\n");
   }
 }
+
+struct shmpage {
+  char *pa;
+  uint used, size, cnt;
+  struct spinlock lock;
+}shmpages[64];
+
+int shmcreate(void) {
+  for (int i = 0; i < 64; i++) {
+    acquire(&shmpages[i].lock);
+    if (!shmpages[i].used) {
+      shmpages[i].pa = kalloc();
+      if (shmpages[i].pa == 0) {
+        release(&shmpages[i].lock);
+        return -1;
+      }
+      shmpages[i].size = PGSIZE;
+      shmpages[i].used = 1;
+      shmpages[i].cnt = 0;
+      release(&shmpages[i].lock);
+      return i;
+    }
+    release(&shmpages[i].lock);
+  }
+  return 0;
+}
+
+int shmrelease(uint id) {
+  if (id >= 64) return -1;
+  acquire(&shmpages[id].lock);
+  if (!shmpages[id].used || shmpages[id].cnt) {
+    release(&shmpages[id].lock);
+    return -1;
+  }
+  kfree(shmpages[id].pa);
+  shmpages[id].used = 0;
+  release(&shmpages[id].lock);
+  return 0;
+}
+
+int shmbind(uint id) {
+  if (id >= 64) return -1;
+  acquire(&shmpages[id].lock);
+  if (!shmpages[id].used) {
+    release(&shmpages[id].lock);
+    return -1;
+  }
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  shmpages[id].cnt++;
+  p->used[id] = 1;
+  p->va[id] = p->sz;
+  p->pa[id] = shmpages[id].pa;
+  p->sz += shmpages[id].size;
+  release(&p->lock);
+  release(&shmpages[id].lock);
+  return 0;
+}
+
+int shmunbind(uint id) {
+  if (id >= 64) return -1;
+  acquire(&shmpages[id].lock);
+  if (!shmpages[id].used) {
+    release(&shmpages[id].lock);
+    return -1;
+  }
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  if (!p->used[id]) {
+    release(&p->lock);
+    return -1;
+  }
+  shmpages[id].cnt--;
+  p->used[id] = 0;
+  p->sz -= shmpages[id].size;
+  release(&p->lock);
+  release(&shmpages[id].lock);
+  return 0;
+}
+
+int shmsize(uint id) {
+  if (id >= 64) return -1;
+  acquire(&shmpages[id].lock);
+  if (!shmpages[id].used) {
+    release(&shmpages[id].lock);
+    return -1;
+  }
+  return shmpages[id].size;
+}
